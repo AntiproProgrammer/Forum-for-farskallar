@@ -1,22 +1,3 @@
-""" 
-CREATE DATABASE webbserver_demo;
-USE webbserver_demo;
-
-CREATE TABLE users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50) NOT NULL,
-    password VARCHAR(50) NOT NULL,
-    description VARCHAR(100) NOT NULL
-);
-
-
-INSERT INTO users (username, password, description)
-VALUES
-    ('alice', 'katt123', 'Administratör med ansvar för servern'),
-    ('bob',   'hund456', 'Vanlig användare som gillar katter'),
-    ('carol', 'fisk789', 'Kurssamordnare, jobbar på distans');
--- I verkligheten skulle man inte lagra lösenord i "klartext" på detta sätt, mer om detta senare i kursen, men vi håller exemplet enkelt.
-"""
 from flask import Flask, session, redirect, url_for, request
 import mysql.connector
 from mysql.connector import Error
@@ -35,20 +16,20 @@ def get_db():
     )
 
 
-def query(sql, params=(), fetchone=False):
+def query(sql, params=(), fetchone=False, commit=False):
     """Liten hjälpfunktion: kör en fråga och returnerar rader som dict:ar."""
     conn = get_db()
     try:
-        cur = conn.cursor(dictionary=True)  # <- ger dict:ar istället för tupler
+        cur = conn.cursor(dictionary=True)
         cur.execute(sql, params)
+        if commit:
+            conn.commit()
+            return cur.lastrowid
         if fetchone:
-            result = cur.fetchone()
-        else:
-            result = cur.fetchall()
-        conn.commit()   # behövs för INSERT/UPDATE/DELETE
-        return result
+            return cur.fetchone()
+        return cur.fetchall()
     finally:
-        conn.close()    # viktigt: stäng anslutningen!
+        conn.close()
 
 
 @app.route('/')
@@ -56,7 +37,6 @@ def index():
     username = session.get('username')
 
     if username:
-        # Hämta färsk info från databasen – inte från sessionen!
         user = query(
             'SELECT id, username, description FROM users WHERE username = %s',
             (username,),
@@ -64,7 +44,6 @@ def index():
         )
 
         if user is None:
-            # Användaren finns inte längre – logga ut
             session.clear()
             return redirect(url_for('index'))
 
@@ -73,9 +52,8 @@ def index():
             <p>Beskrivning: {user['description']}</p>
             <p>Ditt id i databasen: {user['id']}</p>
             <ul>
+                <li><a href="/new_post">Skriv nytt inlägg</a></li>
                 <li><a href="/profile">Min profil</a></li>
-                <li><a href="/secret">Hemlig sida (kräver inloggning)</a></li>
-                <li><a href="/session-info">Visa sessionens innehåll</a></li>
                 <li><a href="/logout">Logga ut</a></li>
             </ul>
         '''
@@ -99,7 +77,6 @@ def login():
             fetchone=True
         )
 
-        # Kolla att användaren finns OCH att lösenordet stämmer
         if user and user['password'] == password:
             session['username'] = user['username']
             return redirect(url_for('index'))
@@ -114,6 +91,38 @@ def login():
             <input type="submit" value="Logga in">
         </form>
         <p><i>Testa: alice/katt123, bob/hund456, carol/fisk789</i></p>
+    '''
+
+
+@app.route('/new_post', methods=['GET', 'POST'])
+def new_post():
+    if 'username' not in session:
+        return redirect(url_for('login'))
+
+    if request.method == 'POST':
+        content = request.form.get('content', '').strip()
+        if content:
+            user = query(
+                'SELECT id FROM users WHERE username = %s',
+                (session['username'],),
+                fetchone=True
+            )
+            if user:
+                query(
+                    'INSERT INTO posts (user_id, content) VALUES (%s, %s)',
+                    (user['id'], content),
+                    commit=True
+                )
+                return redirect(url_for('index'))
+        return 'Inlägget får inte vara tomt. <a href="/new_post">Försök igen</a>'
+
+    return '''
+        <h1>Skriv nytt inlägg</h1>
+        <form method="post">
+            <textarea name="content" rows="5" cols="50" placeholder="Skriv ditt inlägg här..."></textarea><br><br>
+            <input type="submit" value="Publicera">
+        </form>
+        <p><a href="/">Tillbaka</a></p>
     '''
 
 
@@ -136,27 +145,10 @@ def profile():
     '''
 
 
-@app.route('/secret')
-def secret():
-    if 'username' not in session:
-        return redirect(url_for('login'))
-
-    return f'''
-        <h1>🔒 Hemlig sida</h1>
-        <p>Bara {session['username']} kan se detta.</p>
-        <p><a href="/">Tillbaka</a></p>
-    '''
-
-
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('index'))
-
-
-@app.route('/session-info')
-def session_info():
-    return f"Session data: {dict(session)}"
 
 
 if __name__ == '__main__':
